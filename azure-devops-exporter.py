@@ -52,8 +52,8 @@ for pr in filtered_pull_requests:
         'description': detailed_pull_request.description,
         'repository_id': detailed_pull_request.repository.id,
         'completed_date': detailed_pull_request.closed_date.strftime('%Y-%m-%d'),
+        'author': detailed_pull_request.created_by.display_name,
         'work_item_ids': [ int(ref.id) for ref in (detailed_pull_request.work_item_refs or []) ],
-        #'raw': detailed_pull_request.serialize()
     }
     pull_requests_json.append(detailed_pull_request_json)
     work_item_ids.update(detailed_pull_request_json['work_item_ids'])
