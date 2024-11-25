@@ -8,6 +8,7 @@ from azure.devops.v7_1.git import GitClient, GitRepository, GitPullRequest, GitP
 from azure.devops.v7_1.work_item_tracking import WorkItemTrackingClient, WorkItemBatchGetRequest
 from msrest.authentication import BasicAuthentication
 from markdownify import markdownify as md
+import pandas
 
 # Fill in with your personal access token and org URL
 personal_access_token = 'xxx'
@@ -25,13 +26,14 @@ work_item_tracking_client: WorkItemTrackingClient = connection.clients_v7_1.get_
 
 
 repositories: list[GitRepository] = git_client.get_repositories('KDS-PCM')
-repositories_json = [
+repositories_dicts = [
     {
         'id': r.id,
         'name': r.name
     }
     for r in repositories
 ]
+repositories_df = pandas.DataFrame.from_dict(repositories_dicts)
 
 search_criteria = GitPullRequestSearchCriteria()
 search_criteria.creator_id = user_id
@@ -42,8 +44,8 @@ filtered_pull_requests: list[GitPullRequest] = [ pr for pr in pull_requests if p
 
 print(f'Fetched {len(pull_requests)} PR(s) and {len(filtered_pull_requests)} matched the criteria')
 
-work_item_ids = set()
-pull_requests_json = []
+pull_request_dicts = []
+pull_request_work_item_dicts = []
 for pr in filtered_pull_requests:
     detailed_pull_request: GitPullRequest = git_client.get_pull_request(pr.repository.id, pr.pull_request_id, 'KDS-PCM', include_work_item_refs=True)
     detailed_pull_request_json = {
@@ -52,19 +54,24 @@ for pr in filtered_pull_requests:
         'description': detailed_pull_request.description,
         'repository_id': detailed_pull_request.repository.id,
         'completed_date': detailed_pull_request.closed_date.strftime('%Y-%m-%d'),
-        'work_item_ids': [ int(ref.id) for ref in (detailed_pull_request.work_item_refs or []) ],
-        #'raw': detailed_pull_request.serialize()
+        'created_by': detailed_pull_request.created_by.display_name
     }
-    pull_requests_json.append(detailed_pull_request_json)
-    work_item_ids.update(detailed_pull_request_json['work_item_ids'])
+    pull_request_work_item_dicts.extend([{
+         "pull_request_id": detailed_pull_request.pull_request_id,
+         "work_item_id": wi_ref.id
+         } for wi_ref in detailed_pull_request.work_item_refs])
+    pull_request_dicts.append(detailed_pull_request_json)
     time.sleep(0.25)
+
+pr_df = pandas.DataFrame.from_dict(pull_request_dicts)
+pr_wi_df = pandas.DataFrame.from_dict(pull_request_work_item_dicts)
 
 # fields = work_item_tracking_client.get_fields('KDS-PCM')
 # print(json.dumps([ { 'name': field.name, 'referenceName': field.reference_name } for field in fields]))
 
 work_items = []
 work_item_ids_batch_size = 200
-work_item_ids_list = list(work_item_ids)
+work_item_ids_list = list(set([pr_wi['work_item_id'] for pr_wi in pull_request_work_item_dicts]))
 work_item_ids_batches = [work_item_ids_list[i:i + work_item_ids_batch_size] for i in range(0, len(work_item_ids_list), work_item_ids_batch_size)]
 for work_item_ids_batch in work_item_ids_batches:
     get_work_items_request = WorkItemBatchGetRequest()
@@ -82,7 +89,8 @@ for work_item_ids_batch in work_item_ids_batches:
     work_items_batch = work_item_tracking_client.get_work_items_batch(get_work_items_request)
     work_items.extend(work_items_batch)
     print(f'Fetched a batch of {len(work_item_ids_batch)} work items')
-work_items_json = []
+work_item_dicts = []
+work_item_comment_dicts = []
 for wi in work_items:
     wi_json = {
         'id': wi.id,
@@ -98,9 +106,9 @@ for wi in work_items:
             wi_json['description'] = md(repro_steps)
 
     commentsList = work_item_tracking_client.get_comments('KDS-PCM', wi.id, top=50)
-    comments_json = []
     for comment in commentsList.comments:
         comment_json = {
+            'work_item_id': wi.id,
             'author': comment.created_by.display_name,
             'created_date': comment.created_date.isoformat()
         }
@@ -110,17 +118,16 @@ for wi in work_items:
         else:
             comment_json['text'] = comment.text
 
-        comments_json.append(comment_json)
-    wi_json['comments'] = comments_json
+        work_item_comment_dicts.append(comment_json)
 
-    work_items_json.append(wi_json)
+    work_item_dicts.append(wi_json)
     time.sleep(0.25)
 
-full_json = {
-    'repositories': repositories_json,
-    'pull_requests': pull_requests_json,
-    'work_items': work_items_json
-}
+work_item_df = pandas.DataFrame.from_dict(work_item_dicts)
+work_item_comment_df = pandas.DataFrame.from_dict(work_item_comment_dicts)
 
-with open('output.json', 'w') as f:
-    json.dump(full_json, f)
+repositories_df.to_csv('repository.csv', index=False)
+pr_df.to_csv('pull_request.csv', index=False)
+pr_wi_df.to_csv('pull_request_work_item.csv', index=False)
+work_item_df.to_csv('work_item.csv', index=False)
+work_item_comment_df.to_csv('work_item_comment.csv', index=False)
